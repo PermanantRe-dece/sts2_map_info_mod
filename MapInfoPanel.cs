@@ -233,7 +233,7 @@ public class MapInfoPanel : Control
     }
 
     /// <summary>
-    /// 更新药水掉落概率显示。
+    /// 更新药水掉落概率显示（基础 / 精英两行，白野兽雕像时显示 100%）。
     /// </summary>
     private void UpdatePotionChance(RunState runState)
     {
@@ -242,20 +242,32 @@ public class MapInfoPanel : Control
             if (runState.Players.Count > 0)
             {
                 var player = runState.Players[0];
-                var currentValue = player.PlayerOdds.PotionReward.CurrentValue;
-                var percent = (int)Math.Round(currentValue * 100);
-                _potionLabel.Text = $"药水掉落率: {percent}%";
-                if (ModConfig.VerboseLogging) Log.Info($"[MapInfoMod] Potion chance: {currentValue:F3} -> {percent}%");
+
+                // 白野兽雕像 → 100%
+                if (EventConditionDb.HasWhiteBeastStatue(runState))
+                {
+                    _potionLabel.Text = "药水掉率: 100%";
+                    if (ModConfig.VerboseLogging) Log.Info("[MapInfoMod] Potion chance: 100% (WhiteBeastStatue)");
+                    return;
+                }
+
+                var baseValue = player.PlayerOdds.PotionReward.CurrentValue;
+                var basePercent = (int)Math.Round(baseValue * 100);
+                var elitePercent = (int)Math.Round((baseValue + 0.125f) * 100);
+                _potionLabel.Text = $"药水掉率: {basePercent}%\n  精英战: {elitePercent}%";
+
+                if (ModConfig.VerboseLogging)
+                    Log.Info($"[MapInfoMod] Potion: base={baseValue:F3}->{basePercent}%, elite={baseValue + 0.125f:F3}->{elitePercent}%");
             }
             else
             {
-                _potionLabel.Text = "药水掉落率: (无玩家)";
+                _potionLabel.Text = "药水掉率: (无玩家)";
                 Log.Warn("[MapInfoMod] No players in runState");
             }
         }
         catch (Exception ex)
         {
-            _potionLabel.Text = "药水掉落率: (无法获取)";
+            _potionLabel.Text = "药水掉率: (无法获取)";
             Log.Error($"[MapInfoMod] Exception getting potion chance: {ex.GetType().Name}: {ex.Message}");
         }
     }
@@ -456,7 +468,7 @@ public class MapInfoPanel : Control
                 contentHeight += ctrl.Size.Y + 4; // 4 = separation
         }
 
-        float totalHeight = 80f + Math.Min(contentHeight, 600f);
+        float totalHeight = 100f + Math.Min(contentHeight, 600f);
         Size = new Vector2(PanelWidth, totalHeight);
 
         // 更新滚动容器最小高度

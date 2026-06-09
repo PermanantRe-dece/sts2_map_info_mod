@@ -145,4 +145,19 @@ public static class EventConditionDb
             return false;
         }
     }
+
+    /// <summary>
+    /// WhiteBeastStatue（白野兽雕像）：对所有战斗房间强制 100% 掉药水。
+    /// </summary>
+    internal static bool HasWhiteBeastStatue(IRunState runState)
+    {
+        try
+        {
+            return runState.Players.Any(p => p.Relics.Any(r => r is WhiteBeastStatue));
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
