@@ -259,7 +259,7 @@ public class MapInfoPanel : Control
                 var baseValue = player.PlayerOdds.PotionReward.CurrentValue;
                 var basePercent = (int)Math.Round(baseValue * 100);
                 var eliteValue = (baseValue + 0.125f) * 100;
-                _potionLabel.Text = $"药水掉率: {basePercent}%\n  精英战: {eliteValue:F1}%";
+                _potionLabel.Text = $"药水掉率: {basePercent}%\n    精英战: {eliteValue:F1}%";
 
                 if (ModConfig.VerboseLogging)
                     Log.Info($"[MapInfoMod] Potion: base={baseValue:F3}->{basePercent}%, elite={baseValue + 0.125f:F3}->{eliteValue:F1}%");
