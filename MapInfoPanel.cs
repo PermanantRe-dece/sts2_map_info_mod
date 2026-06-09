@@ -46,7 +46,7 @@ public class MapInfoPanel : Control
     private const float PanelWidth = 220f;
     private const float PanelMarginLeft = 30f;
     private const float PanelMarginTop = 160f;
-    private const float PanelMaxHeight = 520f;
+    private const float PanelMaxHeight = 560f;
     private const float PanelHeaderEstimate = 150f;
     private const int FontSizeNormal = 17;
     private const int FontSizeTitle = 20;
