@@ -1,0 +1,11 @@
+{
+  "id": "map_info_mod",
+  "name": "地图信息面板",
+  "author": "Ethan",
+  "description": "在地图界面显示：当前章节事件池（含可触发/条件不足状态和颜色区分）、下一问号节点概率（支持黑名单、佛珠手链、黄金罗盘、灯火钥匙等自动修正）、动态药水掉落概率",
+  "version": "1.0.0",
+  "min_game_version": "0.107.0",
+  "has_pck": false,
+  "has_dll": true,
+  "affects_gameplay": false
+}
