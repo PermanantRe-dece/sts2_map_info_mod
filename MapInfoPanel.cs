@@ -117,9 +117,13 @@ public class MapInfoPanel : Control
         marginContainer.AddChild(_mainContainer);
 
         // === 药水概率标签 ===
-        _potionLabel = CreateLabel("药水掉落率: --", FontSizeTitle);
+        _potionLabel = CreateLabel("药水掉落率: --", FontSizeNormal);
         _potionLabel.AddThemeColorOverride("font_color", _colorTitle);
         _mainContainer.AddChild(_potionLabel);
+
+        // 分隔线
+        var separator1 = new HSeparator();
+        _mainContainer.AddChild(separator1);
 
         // === 未知节点概率 ===
         _unknownLabel = CreateLabel("?节点: --", FontSizeNormal);
@@ -253,11 +257,11 @@ public class MapInfoPanel : Control
 
                 var baseValue = player.PlayerOdds.PotionReward.CurrentValue;
                 var basePercent = (int)Math.Round(baseValue * 100);
-                var elitePercent = (int)Math.Round((baseValue + 0.125f) * 100);
-                _potionLabel.Text = $"药水掉率: {basePercent}%\n  精英战: {elitePercent}%";
+                var eliteValue = (baseValue + 0.125f) * 100;
+                _potionLabel.Text = $"药水掉率: {basePercent}%\n  精英战: {eliteValue:F1}%";
 
                 if (ModConfig.VerboseLogging)
-                    Log.Info($"[MapInfoMod] Potion: base={baseValue:F3}->{basePercent}%, elite={baseValue + 0.125f:F3}->{elitePercent}%");
+                    Log.Info($"[MapInfoMod] Potion: base={baseValue:F3}->{basePercent}%, elite={baseValue + 0.125f:F3}->{eliteValue:F1}%");
             }
             else
             {
