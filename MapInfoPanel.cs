@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Godot;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization;
@@ -28,6 +29,32 @@ public class MapInfoPanel : Control
     private static readonly Color _colorConditionFailed = new Color(0.5f, 0.5f, 0.5f, 1f);
     private static readonly Color _colorPanelBg = new Color(0.05f, 0.05f, 0.08f, 0.82f);
     private static readonly Color _colorTitle = new Color(1f, 0.85f, 0.3f, 1f);
+
+    // ============ 事件选项显示配置 ============
+
+    /// <summary>总是隐藏的选项名（锁定变体等）。</summary>
+    private static readonly HashSet<string> _alwaysExcludeOptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LOCKED",       // Zen Weaver, EndlessConveyor
+        "NO_OPTIONS",   // Self-Help Book
+    };
+
+    /// <summary>事件选项显示模式。</summary>
+    private enum EventDisplayMode { Default, ShowTitleAndDescription }
+
+    /// <summary>需要显示标题+描述的事件（代价在标题中）。</summary>
+    private static readonly Dictionary<string, EventDisplayMode> _eventDisplayOverrides = new()
+    {
+        ["RANWID_THE_ELDER"] = EventDisplayMode.ShowTitleAndDescription,
+    };
+
+    /// <summary>不依赖 GameInfoOptions、使用手动描述的事件。</summary>
+    private static readonly Dictionary<string, string> _manualDescriptionEvents = new()
+    {
+        ["RELIC_TRADER"] = "• 用你的一件遗物换取另一件遗物。",
+        ["COLORFUL_PHILOSOPHERS"] = "• 从其他角色的卡池中选择3张牌。\n  （可选颜色取决于已解锁角色。）",
+        ["SPIRALING_WHIRLPOOL"] = "• 观察螺旋：选择一张牌附魔 Spiral。\n• 饮用漩涡水：回复33%最大生命。",
+    };
 
     // ============ UI 节点 ============
     private VBoxContainer _mainContainer = null!;
@@ -463,11 +490,31 @@ public class MapInfoPanel : Control
                 }
             }
 
+            // 过滤排除名单中的选项（仅当还有其他选项保留时才移除）
+            if (titleMap.Count > _alwaysExcludeOptions.Count)
+            {
+                foreach (var excl in _alwaysExcludeOptions)
+                {
+                    titleMap.Remove(excl);
+                    descMap.Remove(excl);
+                }
+            }
+
             foreach (var kvp in titleMap)
             {
                 descMap.TryGetValue(kvp.Key, out var desc);
                 result.Add((kvp.Key, kvp.Value, desc));
             }
+
+            // 排序：无数字后缀的选项在前，带 _数字 后缀的循环选项在后
+            result.Sort((a, b) =>
+            {
+                int orderA = GetOptionOrderKey(a.Item1);
+                int orderB = GetOptionOrderKey(b.Item1);
+                int cmp = orderA.CompareTo(orderB);
+                if (cmp != 0) return cmp;
+                return string.Compare(a.Item1, b.Item1, StringComparison.Ordinal);
+            });
         }
         catch (Exception ex)
         {
@@ -492,10 +539,30 @@ public class MapInfoPanel : Control
     }
 
     /// <summary>
+    /// 获取选项排序键。无数字后缀 → 0（优先），_N 后缀 → N+1（靠后）。
+    /// </summary>
+    private static int GetOptionOrderKey(string optionName)
+    {
+        var match = Regex.Match(optionName, @"_(\d+)$");
+        return match.Success ? int.Parse(match.Groups[1].Value) + 1 : 0;
+    }
+
+    /// <summary>
     /// 为事件构建悬浮提示数据。
     /// </summary>
     private HoverTip BuildEventHoverTip(EventModel eventModel)
     {
+        // 手动描述事件：不依赖 GameInfoOptions
+        if (_manualDescriptionEvents.TryGetValue(eventModel.Id.Entry, out var manualDesc))
+        {
+            return new HoverTip(eventModel.Title, manualDesc);
+        }
+
+        // 检查显示模式
+        bool showTitleAndDesc = _eventDisplayOverrides.TryGetValue(
+            eventModel.Id.Entry, out var mode)
+            && mode == EventDisplayMode.ShowTitleAndDescription;
+
         var options = ParseEventOptions(eventModel);
 
         string description;
@@ -508,14 +575,133 @@ public class MapInfoPanel : Control
             var lines = new List<string>();
             foreach (var (_, title, desc) in options)
             {
-                lines.Add($"• {title}");
-                if (!string.IsNullOrEmpty(desc))
-                    lines.Add($"  {desc}");
+                if (showTitleAndDesc)
+                {
+                    // 标题+描述模式：代价在标题中的事件（如 Ranwid the Elder）
+                    var cleanedTitle = CleanDynamicVarPlaceholders(title);
+                    var text = !string.IsNullOrEmpty(desc)
+                        ? CleanDynamicVarPlaceholders(desc)
+                        : null;
+                    if (!string.IsNullOrEmpty(cleanedTitle))
+                    {
+                        lines.Add($"• {cleanedTitle}");
+                        if (!string.IsNullOrEmpty(text))
+                            lines.Add($"  {text}");
+                    }
+                    else if (!string.IsNullOrEmpty(text))
+                    {
+                        lines.Add($"• {text}");
+                    }
+                }
+                else
+                {
+                    // 默认模式：只显示内容（描述），无描述时回退到标题
+                    var text = !string.IsNullOrEmpty(desc) ? desc : title;
+                    text = CleanDynamicVarPlaceholders(text);
+                    if (!string.IsNullOrEmpty(text))
+                        lines.Add($"• {text}");
+                }
             }
-            description = string.Join("\n", lines);
+            description = lines.Count > 0
+                ? string.Join("\n", lines)
+                : "(无选项信息)";
         }
 
         return new HoverTip(eventModel.Title, description);
+    }
+
+    /// <summary>
+    /// 清理未解析的动态变量占位符，如 {IsMultiplayer:a|b}。
+    /// 在有 | 分隔时取后半部分（单人模式默认）；无 | 时删除整个占位符。
+    /// 正确处理嵌套花括号。
+    /// </summary>
+    private static string CleanDynamicVarPlaceholders(string text)
+    {
+        var sb = new System.Text.StringBuilder();
+        int depth = 0;
+        bool inPlaceholder = false;
+        bool hasPipe = false;
+        var postPipe = new System.Text.StringBuilder();
+
+        foreach (char c in text)
+        {
+            if (c == '{' && !inPlaceholder)
+            {
+                inPlaceholder = true;
+                depth = 1;
+                hasPipe = false;
+                postPipe.Clear();
+                continue;
+            }
+
+            if (inPlaceholder)
+            {
+                if (c == '{')
+                {
+                    depth++;
+                    if (hasPipe)
+                        postPipe.Append(c);
+                }
+                else if (c == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        inPlaceholder = false;
+                        if (hasPipe)
+                            sb.Append(postPipe.ToString());
+                        // 无 pipe → 整个占位符丢弃
+                        continue;
+                    }
+                    if (hasPipe)
+                        postPipe.Append(c);
+                }
+                else if (c == '|' && depth == 1 && !hasPipe)
+                {
+                    hasPipe = true;
+                    postPipe.Clear(); // 丢弃前半部分（多人模式文本）
+                }
+                else if (hasPipe)
+                {
+                    postPipe.Append(c);
+                }
+                continue;
+            }
+
+            sb.Append(c);
+        }
+
+        // 清理多余空白
+        var cleaned = Regex.Replace(sb.ToString(), @"\s+", " ");
+        cleaned = cleaned.Trim();
+
+        // 抑制未解析的数值 0 → ?
+        cleaned = SuppressZeroValues(cleaned);
+
+        // 修复残缺文本（空 StringVar 导致的 " ." 等）
+        cleaned = Regex.Replace(cleaned, @"\s\.", ".");
+        cleaned = Regex.Replace(cleaned, @"\.{2,}", ".");
+
+        return cleaned;
+    }
+
+    /// <summary>
+    /// 将文本中未解析的数值 0 替换为 ?。
+    /// 先匹配英文本地化语境，再通用回退孤立的 0。
+    /// </summary>
+    private static string SuppressZeroValues(string text)
+    {
+        // 英文本地化语境：gain/lose/deal/take/heal/cost/pay 等后跟 0
+        text = Regex.Replace(text,
+            @"\b(gain|lose|deal|take|heal|costs?|pay|obtain|receive|restore)\s+0\b",
+            "$1 ?", RegexOptions.IgnoreCase);
+        // 0 后跟 gold/HP/Max HP/damage/block
+        text = Regex.Replace(text,
+            @"\b0\s+(gold|HP|Max HP|damage|block)\b",
+            "? $1", RegexOptions.IgnoreCase);
+        // 通用回退：空白符包围的孤立 0（跨语言）
+        text = Regex.Replace(text, @"(?<=[\s>])0(?=[\s<$])", "?");
+        return text;
     }
 
     /// <summary>
