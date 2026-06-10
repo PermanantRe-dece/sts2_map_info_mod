@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Godot;
+using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -415,12 +417,115 @@ public class MapInfoPanel : Control
     }
 
     /// <summary>
+    /// 从 GameInfoOptions 中解析事件选项，按选项名分组。
+    /// 返回 (选项名, 标题, 描述?) 列表。
+    /// </summary>
+    private static List<(string OptionName, string Title, string? Description)> ParseEventOptions(EventModel eventModel)
+    {
+        var result = new List<(string, string, string?)>();
+        try
+        {
+            var locStrings = eventModel.GameInfoOptions.ToList();
+            var titleMap = new Dictionary<string, string>();
+            var descMap = new Dictionary<string, string?>();
+
+            foreach (var locStr in locStrings)
+            {
+                var key = locStr.LocEntryKey;
+                string? optionName = null;
+
+                if (key.EndsWith(".title"))
+                {
+                    optionName = ExtractOptionName(key, ".title");
+                    if (optionName != null)
+                        titleMap[optionName] = locStr.GetFormattedText();
+                }
+                else if (key.EndsWith(".description"))
+                {
+                    optionName = ExtractOptionName(key, ".description");
+                    if (optionName != null)
+                        descMap[optionName] = locStr.GetFormattedText();
+                }
+            }
+
+            // 过滤锁定变体：当同一选项的 _LOCKED 和非 _LOCKED 版本同时存在时，只保留非锁定版本
+            const string lockedSuffix = "_LOCKED";
+            var lockedKeys = titleMap.Keys
+                .Where(k => k.EndsWith(lockedSuffix, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var lockedKey in lockedKeys)
+            {
+                var baseName = lockedKey.Substring(0, lockedKey.Length - lockedSuffix.Length);
+                if (titleMap.ContainsKey(baseName))
+                {
+                    titleMap.Remove(lockedKey);
+                    descMap.Remove(lockedKey);
+                }
+            }
+
+            foreach (var kvp in titleMap)
+            {
+                descMap.TryGetValue(kvp.Key, out var desc);
+                result.Add((kvp.Key, kvp.Value, desc));
+            }
+        }
+        catch (Exception ex)
+        {
+            if (ModConfig.VerboseLogging)
+                Log.Warn($"[MapInfoMod] Failed to parse event options for {eventModel.Id.Entry}: {ex.Message}");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 从 "xxx.pages.INITIAL.options.{name}.{suffix}" 格式的 key 中提取选项名。
+    /// </summary>
+    private static string? ExtractOptionName(string key, string suffix)
+    {
+        const string marker = ".pages.INITIAL.options.";
+        int idx = key.IndexOf(marker, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        int start = idx + marker.Length;
+        int len = key.Length - start - suffix.Length;
+        if (len <= 0) return null;
+        return key.Substring(start, len);
+    }
+
+    /// <summary>
+    /// 为事件构建悬浮提示数据。
+    /// </summary>
+    private HoverTip BuildEventHoverTip(EventModel eventModel)
+    {
+        var options = ParseEventOptions(eventModel);
+
+        string description;
+        if (options.Count == 0)
+        {
+            description = "(无选项信息)";
+        }
+        else
+        {
+            var lines = new List<string>();
+            foreach (var (_, title, desc) in options)
+            {
+                lines.Add($"• {title}");
+                if (!string.IsNullOrEmpty(desc))
+                    lines.Add($"  {desc}");
+            }
+            description = string.Join("\n", lines);
+        }
+
+        return new HoverTip(eventModel.Title, description);
+    }
+
+    /// <summary>
     /// 为单个事件创建一行 UI。
     /// </summary>
     private HBoxContainer CreateEventRow(EventModel eventModel, RunState runState)
     {
         var row = new HBoxContainer();
         row.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        row.MouseFilter = MouseFilterEnum.Stop;
 
         // 获取状态
         bool isAllowed = EventConditionDb.IsEffectivelyAllowed(eventModel, runState);
@@ -430,12 +535,24 @@ public class MapInfoPanel : Control
         nameLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         nameLabel.HorizontalAlignment = HorizontalAlignment.Left;
         nameLabel.SizeFlagsStretchRatio = 1f;
+        nameLabel.MouseFilter = MouseFilterEnum.Ignore;
 
         // 根据状态设置颜色
         if (!isAllowed)
             nameLabel.AddThemeColorOverride("font_color", _colorConditionFailed);
         else
             nameLabel.AddThemeColorOverride("font_color", _colorAvailable);
+
+        // 悬浮提示：显示事件选项内容
+        var hoverTip = BuildEventHoverTip(eventModel);
+        row.Connect(Control.SignalName.MouseEntered, Callable.From(() =>
+        {
+            NHoverTipSet.CreateAndShow(row, hoverTip, HoverTipAlignment.Right);
+        }));
+        row.Connect(Control.SignalName.MouseExited, Callable.From(() =>
+        {
+            NHoverTipSet.Remove(row);
+        }));
 
         row.AddChild(nameLabel);
 
@@ -482,10 +599,16 @@ public class MapInfoPanel : Control
     }
 
     /// <summary>
-    /// 隐藏面板。
+    /// 隐藏面板并清理悬浮提示。
     /// </summary>
     public new void Hide()
     {
+        // 清理事件列表中可能残留的悬浮提示
+        foreach (var child in _eventList.GetChildren())
+        {
+            if (child is Control ctrl)
+                NHoverTipSet.Remove(ctrl);
+        }
         Visible = false;
     }
 }
