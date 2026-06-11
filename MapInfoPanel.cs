@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Rooms;
@@ -56,6 +57,22 @@ public class MapInfoPanel : Control
         ["COLORFUL_PHILOSOPHERS"] = "•获得3张铁甲战士的卡牌。\n•获得3张静默猎手的卡牌。\n•获得3张储君的卡牌。\n•获得3张亡灵契约师的卡牌。\n•获得3张故障机器人的卡牌。\n",
         ["SPIRALING_WHIRLPOOL"] = "•为一张基础 “打击” 或 “防御” 附魔：涡旋。\n•回复33%最大生命。",
         ["ENDLESS_CONVEYOR"] = "•花40金币从传送带上抢一道菜（随机效果：最大生命、升级、变化、无色牌、药水、治疗、金币等）。\n•观看主厨烹饪：升级1张牌后离开。",
+        ["FAKE_MERCHANT"] = "假商人。",
+    };
+
+    /// <summary>零值 DynamicVar 的显示文本覆盖。canonical 模型未运行 CalculateVars()，
+    /// 变量初始值为 0，mod 面板将其替换为 "?"。此处为特定变量提供有意义的显示文本。</summary>
+    private static readonly Dictionary<string, Dictionary<string, string>> _dynamicVarOverrides = new()
+    {
+        ["DENSE_VEGETATION"] = new()
+        {
+            ["Heal"] = "30%最大生命值",
+            ["Gold"] = "61-99",
+        },
+        ["THIS_OR_THAT"] = new()
+        {
+            ["Gold"] = "41-69",
+        },
     };
 
     /// <summary>事件选项显示顺序，匹配游戏 GenerateInitialOptions() 的选项添加顺序。</summary>
@@ -87,6 +104,8 @@ public class MapInfoPanel : Control
         ["BRAIN_LEECH"] = new[] { "SHARE_KNOWLEDGE", "RIP" },
         // DoorsOfLightAndDark: LIGHT > DARK
         ["DOORS_OF_LIGHT_AND_DARK"] = new[] { "LIGHT", "DARK" },
+        // TabletOfTruth: DECIPHER_1 > SMASH (解密 > 砸碎)
+        ["TABLET_OF_TRUTH"] = new[] { "DECIPHER_1", "SMASH" },
     };
 
     // ============ UI 节点 ============
@@ -486,7 +505,7 @@ public class MapInfoPanel : Control
         try
         {
             var locStrings = eventModel.GameInfoOptions.ToList();
-            PatchStringVarDefaults(locStrings);
+            PatchStringVarDefaults(locStrings, eventModel.Id.Entry);
             var titleMap = new Dictionary<string, string>();
             var descMap = new Dictionary<string, string?>();
 
@@ -607,7 +626,7 @@ public class MapInfoPanel : Control
     /// 为 LocString 中空 StringVar 填入通用回退文本，避免空变量导致残缺显示（如 "Lose ."）。
     /// 回退文本语言根据 LocString raw text 是否含 CJK 字符自动选择。
     /// </summary>
-    private static void PatchStringVarDefaults(List<LocString> locStrings)
+    private static void PatchStringVarDefaults(List<LocString> locStrings, string? eventId = null)
     {
         bool? isChinese = null;
         foreach (var locStr in locStrings)
@@ -632,10 +651,17 @@ public class MapInfoPanel : Control
                     string fallback = GetStringVarFallback(sv.Name, isChinese.Value);
                     locStr.Add(new StringVar(sv.Name, fallback));
                 }
-                // 值为 0 的 DynamicVar（GoldVar 等） → "?": SmartFormat 会直接用 "?" 替代 ToString()
+                // 值为 0 的 DynamicVar（GoldVar 等） → "?"（除非有事件特定覆盖）
                 else if (kvp.Value is DynamicVar dv && dv.BaseValue == 0m && dv is not StringVar)
                 {
-                    locStr.Add(kvp.Key, "?");
+                    string replacement = "?";
+                    if (eventId != null
+                        && _dynamicVarOverrides.TryGetValue(eventId, out var varOverrides)
+                        && varOverrides.TryGetValue(kvp.Key, out var customText))
+                    {
+                        replacement = customText;
+                    }
+                    locStr.Add(kvp.Key, replacement);
                 }
             }
         }
@@ -667,6 +693,51 @@ public class MapInfoPanel : Control
     }
 
     /// <summary>
+    /// 为 HungryForMushrooms 构建悬浮提示：解析选项并附加对应遗物的本地化描述。
+    /// </summary>
+    private HoverTip BuildHungryForMushroomsTip(EventModel eventModel)
+    {
+        var options = ParseEventOptions(eventModel);
+        if (options.Count == 0)
+            return new HoverTip(eventModel.Title, "(无选项信息)");
+
+        // 选项名 → 遗物类型的映射
+        var relicMap = new Dictionary<string, RelicModel>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["BIG_MUSHROOM"] = ModelDb.Relic<BigMushroom>(),
+            ["FRAGRANT_MUSHROOM"] = ModelDb.Relic<FragrantMushroom>(),
+        };
+
+        var lines = new List<string>();
+        foreach (var (optionName, title, _) in options)
+        {
+            var cleanedTitle = CleanDynamicVarPlaceholders(title);
+            var line = $"•{cleanedTitle}";
+
+            if (relicMap.TryGetValue(optionName, out var relic))
+            {
+                try
+                {
+                    var relicDesc = relic.DynamicDescription.GetFormattedText();
+                    if (!string.IsNullOrEmpty(relicDesc))
+                        line += $"\n  {relicDesc}";
+                }
+                catch
+                {
+                    // 遗物描述获取失败时只显示选项标题
+                }
+            }
+
+            lines.Add(line);
+        }
+
+        var description = lines.Count > 0
+            ? string.Join("\n", lines)
+            : "(无选项信息)";
+        return new HoverTip(eventModel.Title, description);
+    }
+
+    /// <summary>
     /// 为事件构建悬浮提示数据。
     /// </summary>
     private HoverTip BuildEventHoverTip(EventModel eventModel)
@@ -675,6 +746,12 @@ public class MapInfoPanel : Control
         if (_manualDescriptionEvents.TryGetValue(eventModel.Id.Entry, out var manualDesc))
         {
             return new HoverTip(eventModel.Title, manualDesc);
+        }
+
+        // HungryForMushrooms 特殊处理：选项后面附加对应遗物的本地化描述
+        if (eventModel.Id.Entry == "HUNGRY_FOR_MUSHROOMS")
+        {
+            return BuildHungryForMushroomsTip(eventModel);
         }
 
         // 检查显示模式
@@ -796,6 +873,10 @@ public class MapInfoPanel : Control
 
         // 抑制未解析的数值 0 → ?
         cleaned = SuppressZeroValues(cleaned);
+
+        // 移除数字/ASCII 与 CJK 字符之间的多余空格（如 "61-99 金币" → "61-99金币"）
+        cleaned = Regex.Replace(cleaned, @"([\x00-\x7f])\s+([\x80-\xffff])", "$1$2");
+        cleaned = Regex.Replace(cleaned, @"([\x80-\xffff])\s+([\x00-\x7f])", "$1$2");
 
         // 修复空 StringVar 导致的残缺文本：
         // 中文标点前多余空格（如 "移除 。" → "移除。"）；英文句点由后续步骤处理
