@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Godot;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
@@ -51,9 +52,41 @@ public class MapInfoPanel : Control
     /// <summary>不依赖 GameInfoOptions、使用手动描述的事件。</summary>
     private static readonly Dictionary<string, string> _manualDescriptionEvents = new()
     {
-        ["RELIC_TRADER"] = "• 用你的一件遗物换取另一件遗物。",
-        ["COLORFUL_PHILOSOPHERS"] = "• 从其他角色的卡池中选择3张牌。\n  （可选颜色取决于已解锁角色。）",
-        ["SPIRALING_WHIRLPOOL"] = "• 观察螺旋：选择一张牌附魔 Spiral。\n• 饮用漩涡水：回复33%最大生命。",
+        ["RELIC_TRADER"] = "•用你的一件遗物换取另一件遗物。\n•用你的一件遗物换取另一件遗物。\n•用你的一件遗物换取另一件遗物。",
+        ["COLORFUL_PHILOSOPHERS"] = "•获得3张铁甲战士的卡牌。\n•获得3张静默猎手的卡牌。\n•获得3张储君的卡牌。\n•获得3张亡灵契约师的卡牌。\n•获得3张故障机器人的卡牌。\n",
+        ["SPIRALING_WHIRLPOOL"] = "•为一张基础 “打击” 或 “防御” 附魔：涡旋。\n•回复33%最大生命。",
+        ["ENDLESS_CONVEYOR"] = "•花40金币从传送带上抢一道菜（随机效果：最大生命、升级、变化、无色牌、药水、治疗、金币等）。\n•观看主厨烹饪：升级1张牌后离开。",
+    };
+
+    /// <summary>事件选项显示顺序，匹配游戏 GenerateInitialOptions() 的选项添加顺序。</summary>
+    private static readonly Dictionary<string, string[]> _eventOptionOrder = new()
+    {
+        // SelfHelpBook: Sharp > Nimble > Swift
+        ["SELF_HELP_BOOK"] = new[] { "READ_THE_BACK", "READ_PASSAGE", "READ_ENTIRE_BOOK" },
+        // SunkenStatue: GRAB_SWORD > DIVE_INTO_WATER
+        ["SUNKEN_STATUE"] = new[] { "GRAB_SWORD", "DIVE_INTO_WATER" },
+        // ThisOrThat: PLAIN > ORNATE
+        ["THIS_OR_THAT"] = new[] { "PLAIN", "ORNATE" },
+        // WaterloggedScriptorium: BLOODY_INK > TENTACLE_QUILL > PRICKLY_SPONGE (回血>55>99)
+        ["WATERLOGGED_SCRIPTORIUM"] = new[] { "BLOODY_INK", "TENTACLE_QUILL", "PRICKLY_SPONGE" },
+        // PunchOff: NAB > I_CAN_TAKE_THEM
+        ["PUNCH_OFF"] = new[] { "NAB", "I_CAN_TAKE_THEM" },
+        // Amalgamator: COMBINE_STRIKES > COMBINE_DEFENDS
+        ["AMALGAMATOR"] = new[] { "COMBINE_STRIKES", "COMBINE_DEFENDS" },
+        // DollRoom: RANDOM > TAKE_SOME_TIME > EXAMINE (不失去生命>5>15)
+        ["DOLL_ROOM"] = new[] { "RANDOM", "TAKE_SOME_TIME", "EXAMINE" },
+        // FieldOfManSizedHoles: RESIST > ENTER_YOUR_HOLE
+        ["FIELD_OF_MAN_SIZED_HOLES"] = new[] { "RESIST", "ENTER_YOUR_HOLE" },
+        // CrystalSphere: UNCOVER_FUTURE > PAYMENT_PLAN
+        ["CRYSTAL_SPHERE"] = new[] { "UNCOVER_FUTURE", "PAYMENT_PLAN" },
+        // ZenWeaver: BREATHING_TECHNIQUES > EMOTIONAL_AWARENESS > ARACHNID_ACUPUNCTURE (50>125>250)
+        ["ZEN_WEAVER"] = new[] { "BREATHING_TECHNIQUES", "EMOTIONAL_AWARENESS", "ARACHNID_ACUPUNCTURE" },
+        // Reflections: TOUCH_A_MIRROR > SHATTER
+        ["REFLECTIONS"] = new[] { "TOUCH_A_MIRROR", "SHATTER" },
+        // BrainLeech: SHARE_KNOWLEDGE > RIP
+        ["BRAIN_LEECH"] = new[] { "SHARE_KNOWLEDGE", "RIP" },
+        // DoorsOfLightAndDark: LIGHT > DARK
+        ["DOORS_OF_LIGHT_AND_DARK"] = new[] { "LIGHT", "DARK" },
     };
 
     // ============ UI 节点 ============
@@ -453,6 +486,7 @@ public class MapInfoPanel : Control
         try
         {
             var locStrings = eventModel.GameInfoOptions.ToList();
+            PatchStringVarDefaults(locStrings);
             var titleMap = new Dictionary<string, string>();
             var descMap = new Dictionary<string, string?>();
 
@@ -506,9 +540,31 @@ public class MapInfoPanel : Control
                 result.Add((kvp.Key, kvp.Value, desc));
             }
 
-            // 排序：无数字后缀的选项在前，带 _数字 后缀的循环选项在后
+            // 排序：事件特定语义顺序 > GetOptionOrderKey > 字母序
+            var eventId = eventModel.Id.Entry;
+            Dictionary<string, int>? customOrderMap = null;
+            if (_eventOptionOrder.TryGetValue(eventId, out var customOrder))
+            {
+                customOrderMap = new Dictionary<string, int>(customOrder.Length, StringComparer.Ordinal);
+                for (int i = 0; i < customOrder.Length; i++)
+                    customOrderMap[customOrder[i]] = i;
+            }
+
             result.Sort((a, b) =>
             {
+                // 1) 事件特定自定义顺序
+                if (customOrderMap != null)
+                {
+                    bool hasA = customOrderMap.TryGetValue(a.Item1, out int posA);
+                    bool hasB = customOrderMap.TryGetValue(b.Item1, out int posB);
+                    if (hasA || hasB)
+                    {
+                        if (hasA && hasB) return posA.CompareTo(posB);
+                        // 不在自定义列表中的选项排在最后
+                        return hasA ? -1 : 1;
+                    }
+                }
+                // 2) 回退：非循环选项先于 _N 后缀循环选项，然后字母序
                 int orderA = GetOptionOrderKey(a.Item1);
                 int orderB = GetOptionOrderKey(b.Item1);
                 int cmp = orderA.CompareTo(orderB);
@@ -548,6 +604,69 @@ public class MapInfoPanel : Control
     }
 
     /// <summary>
+    /// 为 LocString 中空 StringVar 填入通用回退文本，避免空变量导致残缺显示（如 "Lose ."）。
+    /// 回退文本语言根据 LocString raw text 是否含 CJK 字符自动选择。
+    /// </summary>
+    private static void PatchStringVarDefaults(List<LocString> locStrings)
+    {
+        bool? isChinese = null;
+        foreach (var locStr in locStrings)
+        {
+            if (!isChinese.HasValue)
+            {
+                try
+                {
+                    string rawText = locStr.GetRawText();
+                    isChinese = ContainsCjk(rawText);
+                }
+                catch
+                {
+                    isChinese = false;
+                }
+            }
+            foreach (var kvp in locStr.Variables)
+            {
+                // 空 StringVar → 回退文本
+                if (kvp.Value is StringVar sv && string.IsNullOrEmpty(sv.StringValue))
+                {
+                    string fallback = GetStringVarFallback(sv.Name, isChinese.Value);
+                    locStr.Add(new StringVar(sv.Name, fallback));
+                }
+                // 值为 0 的 DynamicVar（GoldVar 等） → "?": SmartFormat 会直接用 "?" 替代 ToString()
+                else if (kvp.Value is DynamicVar dv && dv.BaseValue == 0m && dv is not StringVar)
+                {
+                    locStr.Add(kvp.Key, "?");
+                }
+            }
+        }
+    }
+
+    /// <summary>检查字符串是否包含 CJK 字符。</summary>
+    private static bool ContainsCjk(string text)
+    {
+        foreach (char c in text)
+        {
+            if (c >= 0x4E00 && c <= 0x9FFF) return true;
+            if (c >= 0x3400 && c <= 0x4DBF) return true;
+            if (c >= 0xF900 && c <= 0xFAFF) return true;
+        }
+        return false;
+    }
+
+    /// <summary>根据 StringVar 名称约定返回通用回退文本。</summary>
+    private static string GetStringVarFallback(string name, bool isChinese)
+    {
+        string lower = name.ToLowerInvariant();
+        if (lower.Contains("card"))     return isChinese ? "一张随机牌" : "a random card";
+        if (lower.Contains("potion"))   return isChinese ? "一瓶随机药水" : "a random potion";
+        if (lower.Contains("relic"))    return isChinese ? "一件随机遗物" : "a random relic";
+        if (lower.Contains("enchant"))  return isChinese ? "一种附魔" : "an enchantment";
+        if (lower.Contains("curse"))    return isChinese ? "一张诅咒牌" : "a curse";
+        if (lower.Contains("dish"))     return isChinese ? "一道菜" : "a dish";
+        return "?";
+    }
+
+    /// <summary>
     /// 为事件构建悬浮提示数据。
     /// </summary>
     private HoverTip BuildEventHoverTip(EventModel eventModel)
@@ -584,13 +703,13 @@ public class MapInfoPanel : Control
                         : null;
                     if (!string.IsNullOrEmpty(cleanedTitle))
                     {
-                        lines.Add($"• {cleanedTitle}");
+                        lines.Add($"•{cleanedTitle}");
                         if (!string.IsNullOrEmpty(text))
                             lines.Add($"  {text}");
                     }
                     else if (!string.IsNullOrEmpty(text))
                     {
-                        lines.Add($"• {text}");
+                        lines.Add($"•{text}");
                     }
                 }
                 else
@@ -599,7 +718,7 @@ public class MapInfoPanel : Control
                     var text = !string.IsNullOrEmpty(desc) ? desc : title;
                     text = CleanDynamicVarPlaceholders(text);
                     if (!string.IsNullOrEmpty(text))
-                        lines.Add($"• {text}");
+                        lines.Add($"•{text}");
                 }
             }
             description = lines.Count > 0
@@ -671,16 +790,24 @@ public class MapInfoPanel : Control
             sb.Append(c);
         }
 
-        // 清理多余空白
+        // 清理多余空白：先归一化为单空格
         var cleaned = Regex.Replace(sb.ToString(), @"\s+", " ");
         cleaned = cleaned.Trim();
 
         // 抑制未解析的数值 0 → ?
         cleaned = SuppressZeroValues(cleaned);
 
-        // 修复残缺文本（空 StringVar 导致的 " ." 等）
-        cleaned = Regex.Replace(cleaned, @"\s\.", ".");
+        // 修复空 StringVar 导致的残缺文本：
+        // 中文标点前多余空格（如 "移除 。" → "移除。"）；英文句点由后续步骤处理
+        cleaned = Regex.Replace(cleaned, @"\s+([。，、；：！？!?,;:])", "$1");
+        // 孤立句点（空变量名后残留 " . " 或 ". "）
+        cleaned = Regex.Replace(cleaned, @"\s+\.(?=\s|$)", "");
+        // 合并连续标点
         cleaned = Regex.Replace(cleaned, @"\.{2,}", ".");
+
+        // 再次归一化多余空白
+        cleaned = Regex.Replace(cleaned, @"\s{2,}", " ");
+        cleaned = cleaned.Trim();
 
         return cleaned;
     }
@@ -699,6 +826,16 @@ public class MapInfoPanel : Control
         text = Regex.Replace(text,
             @"\b0\s+(gold|HP|Max HP|damage|block)\b",
             "? $1", RegexOptions.IgnoreCase);
+        // 中文本地化语境：动词后跟 0（如"获得0金币"；CJK无空格书写，不能用\b）
+        text = Regex.Replace(text,
+            @"(获得|失去|造成|受到|回复|消耗|支付|移除|丢弃|升级|增加|减少)\s*0",
+            "$1 ?");
+        // 0 后跟中文名词（如"0 金币"）
+        text = Regex.Replace(text,
+            @"(?<=[\s一-鿿]|^)0\s*(金币|生命|伤害|护甲|格挡|药水|卡牌|遗物|诅咒|最大生命)",
+            "? $1");
+        // CJK 包围的孤立 0（处理中文无空格书写）
+        text = Regex.Replace(text, @"(?<=[一-鿿])0(?=[一-鿿])", "?");
         // 通用回退：空白符包围的孤立 0（跨语言）
         text = Regex.Replace(text, @"(?<=[\s>])0(?=[\s<$])", "?");
         return text;
