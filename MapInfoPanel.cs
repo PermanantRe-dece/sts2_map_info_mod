@@ -41,6 +41,19 @@ public class MapInfoPanel : Control
         "NO_OPTIONS",   // Self-Help Book
     };
 
+    /// <summary>按事件排除的选项名（本地化表中存在但游戏代码从不生成）。</summary>
+    private static readonly Dictionary<string, HashSet<string>> _eventExcludeOptions = new()
+    {
+        ["COLORFUL_PHILOSOPHERS"] = new(StringComparer.OrdinalIgnoreCase) { "EQUALITY" },
+        ["SPIRALING_WHIRLPOOL"] = new(StringComparer.OrdinalIgnoreCase) { "REACH_IN" },
+    };
+
+    /// <summary>不要对字面文本中的 0 做 ? 替换的事件（这些事件的 0 是有效值而非未解析变量）。</summary>
+    private static readonly HashSet<string> _suppressZeroExcludeEvents = new(StringComparer.Ordinal)
+    {
+        "INFESTED_AUTOMATON",
+    };
+
     /// <summary>事件选项显示模式。</summary>
     private enum EventDisplayMode { Default, ShowTitleAndDescription }
 
@@ -53,10 +66,7 @@ public class MapInfoPanel : Control
     /// <summary>不依赖 GameInfoOptions、使用手动描述的事件。</summary>
     private static readonly Dictionary<string, string> _manualDescriptionEvents = new()
     {
-        ["RELIC_TRADER"] = "•用你的一件遗物换取另一件遗物。\n•用你的一件遗物换取另一件遗物。\n•用你的一件遗物换取另一件遗物。",
-        ["COLORFUL_PHILOSOPHERS"] = "•获得3张铁甲战士的卡牌。\n•获得3张静默猎手的卡牌。\n•获得3张储君的卡牌。\n•获得3张亡灵契约师的卡牌。\n•获得3张故障机器人的卡牌。\n",
-        ["SPIRALING_WHIRLPOOL"] = "•为一张基础 “打击” 或 “防御” 附魔：涡旋。\n•回复33%最大生命。",
-        ["ENDLESS_CONVEYOR"] = "•花40金币从传送带上抢一道菜（随机效果：最大生命、升级、变化、无色牌、药水、治疗、金币等）。\n•观看主厨烹饪：升级1张牌后离开。",
+        ["ENDLESS_CONVEYOR"] = "•支付40金币。[随机料理效果]。接着吃！\n•从牌组中随机升级一张牌。",
         ["FAKE_MERCHANT"] = "假商人。",
     };
 
@@ -72,6 +82,10 @@ public class MapInfoPanel : Control
         ["THIS_OR_THAT"] = new()
         {
             ["Gold"] = "41-69",
+        },
+        ["SPIRALING_WHIRLPOOL"] = new()
+        {
+            ["Heal"] = "33%最大生命值",
         },
     };
 
@@ -106,6 +120,14 @@ public class MapInfoPanel : Control
         ["DOORS_OF_LIGHT_AND_DARK"] = new[] { "LIGHT", "DARK" },
         // TabletOfTruth: DECIPHER_1 > SMASH (解密 > 砸碎)
         ["TABLET_OF_TRUTH"] = new[] { "DECIPHER_1", "SMASH" },
+        // WelcomeToWongos: BARGAIN_BIN(100) > FEATURED_ITEM(200) > MYSTERY_BOX(300) > LEAVE(降级)
+        ["WELCOME_TO_WONGOS"] = new[] { "BARGAIN_BIN", "FEATURED_ITEM", "MYSTERY_BOX", "LEAVE" },
+        // ColorfulPhilosophers: NECROBINDER > IRONCLAD > REGENT > SILENT > DEFECT (CardPoolColorOrder)
+        ["COLORFUL_PHILOSOPHERS"] = new[] { "NECROBINDER", "IRONCLAD", "REGENT", "SILENT", "DEFECT" },
+        // SpiralingWhirlpool: OBSERVE > DRINK
+        ["SPIRALING_WHIRLPOOL"] = new[] { "OBSERVE", "DRINK" },
+        // RelicTrader: TOP > MIDDLE > BOTTOM
+        ["RELIC_TRADER"] = new[] { "TOP", "MIDDLE", "BOTTOM" },
     };
 
     // ============ UI 节点 ============
@@ -553,6 +575,16 @@ public class MapInfoPanel : Control
                 }
             }
 
+            // 过滤事件特定的死选项（本地化表中存在但游戏代码从不生成）
+            if (_eventExcludeOptions.TryGetValue(eventModel.Id.Entry, out var eventExcludes))
+            {
+                foreach (var excl in eventExcludes)
+                {
+                    titleMap.Remove(excl);
+                    descMap.Remove(excl);
+                }
+            }
+
             foreach (var kvp in titleMap)
             {
                 descMap.TryGetValue(kvp.Key, out var desc);
@@ -711,7 +743,7 @@ public class MapInfoPanel : Control
         var lines = new List<string>();
         foreach (var (optionName, title, _) in options)
         {
-            var cleanedTitle = CleanDynamicVarPlaceholders(title);
+            var cleanedTitle = CleanDynamicVarPlaceholders(title, eventModel.Id.Entry);
             var line = $"•{cleanedTitle}";
 
             if (relicMap.TryGetValue(optionName, out var relic))
@@ -774,9 +806,9 @@ public class MapInfoPanel : Control
                 if (showTitleAndDesc)
                 {
                     // 标题+描述模式：代价在标题中的事件（如 Ranwid the Elder）
-                    var cleanedTitle = CleanDynamicVarPlaceholders(title);
+                    var cleanedTitle = CleanDynamicVarPlaceholders(title, eventModel.Id.Entry);
                     var text = !string.IsNullOrEmpty(desc)
-                        ? CleanDynamicVarPlaceholders(desc)
+                        ? CleanDynamicVarPlaceholders(desc, eventModel.Id.Entry)
                         : null;
                     if (!string.IsNullOrEmpty(cleanedTitle))
                     {
@@ -793,7 +825,7 @@ public class MapInfoPanel : Control
                 {
                     // 默认模式：只显示内容（描述），无描述时回退到标题
                     var text = !string.IsNullOrEmpty(desc) ? desc : title;
-                    text = CleanDynamicVarPlaceholders(text);
+                    text = CleanDynamicVarPlaceholders(text, eventModel.Id.Entry);
                     if (!string.IsNullOrEmpty(text))
                         lines.Add($"•{text}");
                 }
@@ -811,7 +843,7 @@ public class MapInfoPanel : Control
     /// 在有 | 分隔时取后半部分（单人模式默认）；无 | 时删除整个占位符。
     /// 正确处理嵌套花括号。
     /// </summary>
-    private static string CleanDynamicVarPlaceholders(string text)
+    private static string CleanDynamicVarPlaceholders(string text, string? eventId = null)
     {
         var sb = new System.Text.StringBuilder();
         int depth = 0;
@@ -871,12 +903,13 @@ public class MapInfoPanel : Control
         var cleaned = Regex.Replace(sb.ToString(), @"\s+", " ");
         cleaned = cleaned.Trim();
 
-        // 抑制未解析的数值 0 → ?
-        cleaned = SuppressZeroValues(cleaned);
+        // 抑制未解析的数值 0 → ?（排除字面 0 有效的事件）
+        if (eventId == null || !_suppressZeroExcludeEvents.Contains(eventId))
+            cleaned = SuppressZeroValues(cleaned);
 
         // 移除数字/ASCII 与 CJK 字符之间的多余空格（如 "61-99 金币" → "61-99金币"）
-        cleaned = Regex.Replace(cleaned, @"([\x00-\x7f])\s+([\x80-\xffff])", "$1$2");
-        cleaned = Regex.Replace(cleaned, @"([\x80-\xffff])\s+([\x00-\x7f])", "$1$2");
+        cleaned = Regex.Replace(cleaned, @"([\x00-\x7f])\s+([一-鿿])", "$1$2");
+        cleaned = Regex.Replace(cleaned, @"([一-鿿])\s+([\x00-\x7f])", "$1$2");
 
         // 修复空 StringVar 导致的残缺文本：
         // 中文标点前多余空格（如 "移除 。" → "移除。"）；英文句点由后续步骤处理
